@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { collection, query, where, getDocs, doc, updateDoc, getDoc, increment, onSnapshot } from 'firebase/firestore';
+import { collection, addDoc, query, where, getDocs, doc, updateDoc, getDoc, increment, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import PropertyForm from '../components/PropertyForm/PropertyForm';
 import DeveloperForm from '../components/DeveloperForm/DeveloperForm';
@@ -11,8 +11,42 @@ import SubscriptionService from '../services/subscriptionService';
 import { formatDate } from '../utils/dateFormatter';
 import PropertyTemplateEditor from '../components/PropertyTemplateEditor/PropertyTemplateEditor';
 import { compressImage } from '../utils/imageCompressor';
-import { propertiesAPI } from '../services/api';
 import './PostProperty.css';
+
+// --- Cloudinary Configuration ---
+const CLOUDINARY_CLOUD_NAME = "dooamkdih";
+const CLOUDINARY_UPLOAD_PRESET = "property_images";
+
+/**
+ * Uploads an image file to Cloudinary using an unsigned preset.
+ * @param {File} file The image file to upload.
+ * @returns {Promise<string>} A promise that resolves to the secure URL of the uploaded image.
+ */
+const uploadToCloudinary = async (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+
+  const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(`Cloudinary upload failed: ${errorData.error.message}`);
+    }
+
+    const data = await response.json();
+    return data.secure_url;
+  } catch (error) {
+    console.error("Error uploading to Cloudinary:", error);
+    throw error;
+  }
+};
 
 
 
@@ -346,17 +380,13 @@ const PostProperty = () => {
     setLoading(true);
 
     try {
-      // Prepare images for update (only new images, backend will handle upload)
-      const imagesToUpload = [];
+      let imageUrl = formData.image_url || ''; // Use existing image URL
+
+      // Check if a new image file is selected
       if (imageFile) {
-        console.log('📉 Compressing new cover image...');
-        try {
-          const compressed = await compressImage(imageFile);
-          imagesToUpload.push(compressed);
-        } catch (err) {
-          console.warn('Compression failed, using original', err);
-          imagesToUpload.push(imageFile);
-        }
+        console.log('📸 Uploading new image to Cloudinary...');
+        imageUrl = await uploadToCloudinary(imageFile);
+        console.log('✅ New image uploaded successfully:', imageUrl);
       }
 
       const propertyData = {
@@ -366,6 +396,7 @@ const PostProperty = () => {
         price: formData.price,
         description: formData.description,
         facilities: formData.facilities ? formData.facilities.split(',').map(f => f.trim()).filter(f => f) : [],
+        image_url: imageUrl,
         user_type: userType, // Keep user type
         // created_at should not change
         status: 'active'
@@ -392,9 +423,8 @@ const PostProperty = () => {
         propertyData.rera_number = '';
       }
 
-      // Use backend API to update property
-      console.log('💾 Updating property via backend API...', propertyData);
-      await propertiesAPI.update(editingProperty.id, propertyData, imagesToUpload);
+      const propertyRef = doc(db, 'properties', editingProperty.id);
+      await updateDoc(propertyRef, propertyData);
 
       alert(`Property updated successfully! You can view it in the ${userType === 'developer' ? 'Developer' : 'Individual'} Exhibition.`);
       setLoading(false);
@@ -553,25 +583,21 @@ const PostProperty = () => {
     setLoading(true);
 
     try {
-      // --- Prepare images for backend API ---
-      console.log('📦 Preparing images for upload...');
+      // --- OPTIMIZATION START: Image Compression & Parallel Uploads ---
 
-      // Collect all image files (backend will handle upload)
-      const imagesToUpload = [];
-
-      // 1. Compress and add cover image
+      // 1. Prepare files and Compress
+      let compressedCoverFile = null;
       if (imageFile) {
+        // Only compress if it's a new file (not already uploaded/url)
         console.log('📉 Compressing cover image...');
         try {
-          const compressedCover = await compressImage(imageFile);
-          imagesToUpload.push(compressedCover);
+          compressedCoverFile = await compressImage(imageFile);
         } catch (err) {
           console.warn('Cover compression failed, using original', err);
-          imagesToUpload.push(imageFile);
+          compressedCoverFile = imageFile;
         }
       }
 
-      // 2. Add extra images
       let filesToUpload = [];
       if (activeData.extraFiles && activeData.extraFiles.length > 0) {
         filesToUpload = activeData.extraFiles;
@@ -579,25 +605,53 @@ const PostProperty = () => {
         filesToUpload = projectImages;
       }
 
+      let compressedExtraFiles = [];
       if (filesToUpload.length > 0) {
         console.log(`📉 Compressing ${filesToUpload.length} extra images...`);
-        const compressedExtras = await Promise.all(
+        compressedExtraFiles = await Promise.all(
           filesToUpload.map(async (file) => {
             try { return await compressImage(file); }
             catch (e) { return file; }
           })
         );
-        imagesToUpload.push(...compressedExtras);
       }
 
-      // 3. Add brochure file if exists (for developer)
-      if (userType === 'developer' && brochureFile) {
-        imagesToUpload.push(brochureFile);
+      // 2. Parallel Uploads (Cover + Extras at same time)
+      console.log('☁️ Uploading images in parallel...');
+
+      const uploadPromises = [];
+
+      // Promise for Cover
+      let coverUploadPromise = Promise.resolve('');
+      if (compressedCoverFile) {
+        coverUploadPromise = uploadToCloudinary(compressedCoverFile).catch(err => {
+          console.error("Cover upload failed", err);
+          throw new Error("Cover image upload failed");
+        });
       }
 
-      console.log(`✅ Prepared ${imagesToUpload.length} images for upload`);
+      // Promise for Extras
+      let extrasUploadPromise = Promise.resolve([]);
+      if (compressedExtraFiles.length > 0) {
+        extrasUploadPromise = Promise.all(
+          compressedExtraFiles.map(file => uploadToCloudinary(file))
+        ).catch(err => {
+          console.error("Extra images upload failed", err);
+          throw new Error("Some gallery images failed to upload");
+        });
+      }
 
-      // --- Prepare property data ---
+      // Wait for all uploads
+      const [imageUrl, extraImageUrls] = await Promise.all([
+        coverUploadPromise,
+        extrasUploadPromise
+      ]);
+
+      console.log('✅ All uploads complete.');
+
+      // --- END OPTIMIZATION ---
+
+      // Prepare base property data
       const propertyData = {
         title: userType === 'developer' ? (activeData.projectName || '') : (activeData.title || ''),
         type: userType === 'developer' ? (activeData.schemeType || '') : (activeData.type || ''),
@@ -605,7 +659,10 @@ const PostProperty = () => {
         price: userType === 'developer' ? `₹${activeData.basePrice} - ₹${activeData.maxPrice}` : (activeData.price || ''),
         description: activeData.description || '',
         facilities: activeData.facilities ? (Array.isArray(activeData.facilities) ? activeData.facilities : activeData.facilities.split(',').map(f => f.trim()).filter(f => f)) : [],
+        image_url: imageUrl,
+        user_id: currentUser.uid || '',
         user_type: userType || 'individual',
+        created_at: new Date().toISOString(),
         status: 'active'
       };
 
@@ -620,12 +677,26 @@ const PostProperty = () => {
 
       if (showBhkType && formData.bhk) propertyData.bhk = formData.bhk;
 
+      // Map images to schema
+      if (extraImageUrls.length > 0) {
+        propertyData.images = extraImageUrls;
+        propertyData.project_images = extraImageUrls; // Maintain compatibility
+        // Fallback for cover if missing
+        if (!imageUrl && extraImageUrls.length > 0) {
+          propertyData.image_url = extraImageUrls[0];
+        }
+      }
+
       // Developer fields...
       if (userType === 'developer') {
+        // ... existing dev fields mapping ...
+        // Note: activeData contains the merged template data which has these fields
+        if (brochureFile) propertyData.brochure_url = await uploadToCloudinary(brochureFile);
+
         propertyData.scheme_type = activeData.schemeType || '';
         propertyData.residential_options = activeData.residentialOptions || [];
         propertyData.commercial_options = activeData.commercialOptions || [];
-        propertyData.base_price = activeData.basePrice || activeData.minPrice || '';
+        propertyData.base_price = activeData.basePrice || activeData.minPrice || ''; // handle key vars
         propertyData.max_price = activeData.maxPrice || '';
         propertyData.project_location = activeData.projectLocation || '';
         propertyData.amenities = activeData.amenities || [];
@@ -648,22 +719,16 @@ const PostProperty = () => {
         if (activeData.contactPhone) propertyData.contact_phone = activeData.contactPhone;
       }
 
-      // Use backend API to create property
-      console.log('💾 Saving to backend API...', propertyData);
-      const response = await propertiesAPI.create(propertyData, imagesToUpload);
-      const propertyId = response.id || response.property?.id || response.property_id;
+      console.log('💾 Saving to Firestore...', propertyData);
+      const docRef = await addDoc(collection(db, 'properties'), propertyData);
+      const propertyId = docRef.id;
 
-      // Credits/Subscription deduction (if still using Firebase for credits)
-      // Note: This might need to be handled by backend in the future
-      try {
-        if (userType === 'developer') {
-          const userRef = doc(db, 'users', currentUser.uid);
-          await updateDoc(userRef, { property_credits: increment(-1) });
-        } else if (userType === 'individual' && currentUser?.uid) {
-          await SubscriptionService.markSubscriptionUsed(currentUser.uid, propertyId);
-        }
-      } catch (creditError) {
-        console.warn('Credit deduction failed (may be handled by backend):', creditError);
+      // ... Credits/Subscription deduction (Reuse existing logic block if possible or copy) ...
+      if (userType === 'developer') {
+        const userRef = doc(db, 'users', currentUser.uid);
+        await updateDoc(userRef, { property_credits: increment(-1) });
+      } else if (userType === 'individual' && currentUser?.uid) {
+        await SubscriptionService.markSubscriptionUsed(currentUser.uid, propertyId);
       }
 
       setLoading(false);
