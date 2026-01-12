@@ -49,16 +49,40 @@ const apiRequest = async(endpoint, options = {}) => {
 
     try {
         const response = await fetch(url, config);
-        const data = await response.json();
+        let data;
+        
+        // Try to parse JSON response
+        try {
+            const text = await response.text();
+            data = text ? JSON.parse(text) : {};
+        } catch (parseError) {
+            console.error('Failed to parse response:', parseError);
+            data = { error: 'Invalid response from server' };
+        }
 
         if (!response.ok) {
-            throw new Error(data.error || 'Request failed');
+            const errorMessage = data.error || 
+                                data.message || 
+                                data.details ||
+                                `Request failed with status ${response.status}`;
+            console.error(`API Error (${response.status}):`, {
+                url,
+                status: response.status,
+                statusText: response.statusText,
+                error: errorMessage,
+                data
+            });
+            throw new Error(errorMessage);
         }
 
         return data;
     } catch (error) {
         console.error('API Error:', error);
-        throw error;
+        // If it's already an Error object, throw it as is
+        if (error instanceof Error) {
+            throw error;
+        }
+        throw new Error(error.message || 'Request failed');
     }
 };
 
@@ -324,10 +348,22 @@ export const subscriptionsAPI = {
   },
 
   verifyPayment: async (paymentData) => {
-    return apiRequest('/subscriptions/verify-payment', {
-      method: 'POST',
-      body: JSON.stringify(paymentData),
-    });
+    console.log('🔍 Sending payment verification request:', paymentData);
+    try {
+      const response = await apiRequest('/subscriptions/verify-payment', {
+        method: 'POST',
+        body: JSON.stringify(paymentData),
+      });
+      console.log('✅ Payment verification response:', response);
+      return response;
+    } catch (error) {
+      console.error('❌ Payment verification error:', error);
+      // Try to get more details from the error
+      if (error.message) {
+        throw new Error(error.message);
+      }
+      throw new Error('Payment verification failed. Please contact support.');
+    }
   },
 
   getStatus: async () => {

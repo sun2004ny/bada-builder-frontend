@@ -394,22 +394,34 @@ const ThreeDView = () => {
 
         // Calculate 0.5% advance payment
         const advanceAmount = (unit.price * 0.5) / 100;
+        const advanceAmountPaise = Math.round(advanceAmount * 100); // Convert to paise
         const currency = 'INR';
 
-        console.log('\ud83d\ude80 Starting unit booking payment for:', unit.unitNumber);
-        console.log('\ud83d\udcb0 Advance Amount (0.5%):', advanceAmount);
+        console.log('🚀 Starting unit booking payment for:', unit.unitNumber);
+        console.log('💰 Advance Amount (0.5%):', advanceAmount, 'rupees');
+        console.log('💰 Advance Amount in paise:', advanceAmountPaise);
 
         const options = {
             key: import.meta.env.VITE_RAZORPAY_KEY_ID,
-            amount: advanceAmount * 100, // Amount in paise
+            amount: advanceAmountPaise, // Amount in paise
             currency: currency,
             name: 'Bada Builder',
             description: `Unit Booking - ${unit.unitNumber} (${property?.title || 'Property'})`,
             image: '/logo.png',
             handler: async function (response) {
-                console.log('\u2705 Payment successful:', response);
+                console.log('✅ Payment successful:', response);
 
                 try {
+                    // Get user ID from userProfile (JWT auth) or currentUser (fallback)
+                    const userId = userProfile?.id || currentUser?.id || currentUser?.uid;
+                    
+                    if (!userId) {
+                        console.error('No user ID found');
+                        alert('User authentication error. Please login again.');
+                        setPaymentLoading(false);
+                        return;
+                    }
+
                     // Atomic Firestore Updates
                     const batch = writeBatch(db);
 
@@ -422,9 +434,9 @@ const ThreeDView = () => {
 
                     batch.update(unitRef, {
                         status: 'booked',
-                        bookedBy: currentUser.uid,
-                        bookedByName: userProfile?.name || currentUser.displayName || 'User',
-                        bookedByEmail: userProfile?.email || currentUser.email,
+                        bookedBy: userId,
+                        bookedByName: userProfile?.name || currentUser?.displayName || 'User',
+                        bookedByEmail: userProfile?.email || currentUser?.email,
                         bookedAt: new Date().toISOString(),
                         paymentId: response.razorpay_payment_id,
                         amountPaid: advanceAmount,
@@ -434,9 +446,9 @@ const ThreeDView = () => {
                     // 2. Store Payment Record
                     const paymentData = {
                         payment_id: response.razorpay_payment_id,
-                        user_id: currentUser.uid,
-                        user_name: userProfile?.name || currentUser.displayName || 'User',
-                        user_email: userProfile?.email || currentUser.email,
+                        user_id: userId,
+                        user_name: userProfile?.name || currentUser?.displayName || 'User',
+                        user_email: userProfile?.email || currentUser?.email,
                         property_id: String(propertyId),
                         property_title: property?.title || 'Property',
                         unit_id: unit.id,
@@ -444,6 +456,7 @@ const ThreeDView = () => {
                         tower_id: unit.towerId,
                         floor_id: unit.floorId,
                         amount: advanceAmount,
+                        amount_paise: advanceAmountPaise, // Also store in paise for verification
                         unit_price: unit.price,
                         payment_type: 'unit_booking',
                         payment_status: 'success',
@@ -464,11 +477,11 @@ const ThreeDView = () => {
                     });
 
                     // 4. Add User to Group Members
-                    const memberRef = doc(db, 'properties', String(propertyId), 'members', currentUser.uid);
+                    const memberRef = doc(db, 'properties', String(propertyId), 'members', userId);
                     batch.set(memberRef, {
-                        userId: currentUser.uid,
-                        userName: userProfile?.name || currentUser.displayName || 'User',
-                        userEmail: userProfile?.email || currentUser.email,
+                        userId: userId,
+                        userName: userProfile?.name || currentUser?.displayName || 'User',
+                        userEmail: userProfile?.email || currentUser?.email,
                         unitId: unit.id,
                         unitNumber: unit.unitNumber,
                         towerId: unit.towerId,

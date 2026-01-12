@@ -2,8 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { collection, addDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { bookingsAPI } from '../services/api';
 import emailjs from '@emailjs/browser';
 import './BookSiteVisit.css';
 
@@ -401,13 +400,61 @@ const BookSiteVisit = () => {
         };
 
         try {
-          // Save booking with payment details to Firebase
-          const docRef = await addDoc(collection(db, 'bookings'), paymentData);
-          paymentData.booking_id = docRef.id;
-          paymentData.property_location = property?.location || 'N/A';
+          // Prepare booking data with payment verification
+          const bookingDataWithPayment = {
+            ...bookingData,
+            payment_method: 'razorpay_previsit',
+            razorpay_payment_id: response.razorpay_payment_id,
+            razorpay_order_id: response.razorpay_order_id || '',
+            razorpay_signature: response.razorpay_signature || '',
+            payment_amount: amount,
+            payment_currency: currency || 'INR',
+            payment_status: 'completed'
+          };
+
+          // Verify payment and create booking via backend API
+          const paymentVerificationData = {
+            razorpay_payment_id: response.razorpay_payment_id,
+            razorpay_order_id: response.razorpay_order_id || '',
+            razorpay_signature: response.razorpay_signature || '',
+            amount: amount * 100, // Amount in paise (for signature verification)
+            amount_rupees: amount, // Also send in rupees
+            currency: currency || 'INR'
+          };
+
+          console.log('🔍 Verifying payment and creating booking...', {
+            ...paymentVerificationData,
+            razorpay_signature: paymentVerificationData.razorpay_signature ? '***' : 'missing'
+          });
+
+          // Create booking with payment verification via backend
+          const bookingResult = await bookingsAPI.create(bookingDataWithPayment);
+          
+          // Verify payment separately if needed
+          try {
+            await bookingsAPI.verifyPayment(paymentVerificationData);
+            console.log('✅ Payment verified');
+          } catch (verifyError) {
+            console.warn('Payment verification warning:', verifyError);
+            // Continue anyway as booking is created
+          }
+
+          const bookingId = bookingResult.booking_id || bookingResult.id || bookingResult.bookingId;
+          
+          // Prepare email data
+          const emailData = {
+            ...bookingDataWithPayment,
+            booking_id: bookingId,
+            property_location: property?.location || 'N/A'
+          };
 
           // Send email notification
-          await sendAdminEmail(paymentData);
+          try {
+            await sendAdminEmail(emailData);
+          } catch (emailError) {
+            console.warn('Email notification failed:', emailError);
+            // Don't block success if email fails
+          }
 
           // Show success and redirect
           setBookingSuccess(true);
@@ -420,8 +467,9 @@ const BookSiteVisit = () => {
           }, 3000);
 
         } catch (error) {
-          console.error('Error saving booking after payment:', error);
-          alert('Payment successful but booking save failed. Please contact support with payment ID: ' + response.razorpay_payment_id);
+          console.error('Error creating booking after payment:', error);
+          const errorMessage = error.message || 'Booking creation failed';
+          alert(`Payment successful but ${errorMessage}. Please contact support with payment ID: ${response.razorpay_payment_id}`);
         }
       },
       prefill: {

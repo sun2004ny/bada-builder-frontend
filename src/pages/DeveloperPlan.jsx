@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { doc, updateDoc, collection, addDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { subscriptionsAPI } from '../services/api';
 import './SubscriptionPlans.css';
 
 /* ---------- DEVELOPER / BUILDER PLAN (ONLY ONE PLAN) ---------- */
@@ -23,7 +22,7 @@ const developerPlan = [
 
 const DeveloperPlan = () => {
   const navigate = useNavigate();
-  const { currentUser, isAuthenticated, userProfile } = useAuth();
+  const { currentUser, isAuthenticated, userProfile, refreshProfile } = useAuth();
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [razorpayLoaded, setRazorpayLoaded] = useState(false);
@@ -87,60 +86,62 @@ const DeveloperPlan = () => {
       handler: async function (response) {
         console.log('✅ Payment successful:', response);
 
-        // Calculate expiry date
-        const expiryDate = calculateExpiryDate(months);
-
-        // Prepare payment data
-        const paymentData = {
-          payment_id: response.razorpay_payment_id,
-          amount: amount,
-          plan_name: plan.duration,
-          user_id: currentUser.uid,
-          payment_status: 'success',
-          created_at: new Date().toISOString(),
-          razorpay_order_id: response.razorpay_order_id || '',
-          razorpay_signature: response.razorpay_signature || '',
-          payment_currency: currency,
-          payment_timestamp: new Date().toISOString(),
-          user_role: userRole
-        };
-
-        // Prepare subscription data
-        const subscriptionData = {
-          active_plan: plan.id,
-          plan_start_date: new Date().toISOString(),
-          plan_status: 'active',
-          is_subscribed: true,
-          subscription_expiry: expiryDate,
-          subscription_plan: plan.id,
-          subscription_price: plan.price,
-          subscribed_at: new Date().toISOString(),
-          user_type: userRole,
-          property_credits: 20, // Set 20 credits for developer plan
-          total_credits_purchased: 20 // Reset/Set total credits (simplified logic)
-        };
+        // Get user ID from userProfile (JWT auth) or currentUser (fallback)
+        const userId = userProfile?.id || currentUser?.id;
+        
+        if (!userId) {
+          console.error('No user ID found. UserProfile:', userProfile, 'CurrentUser:', currentUser);
+          alert('User authentication error. Please login again.');
+          setPaymentLoading(false);
+          return;
+        }
 
         try {
-          // Store payment details in database
-          await addDoc(collection(db, 'payments'), paymentData);
-          console.log('✅ Payment data stored successfully');
+          // Verify payment with backend API
+          // Send amount in paise (as sent to Razorpay) for signature verification
+          const paymentData = {
+            razorpay_payment_id: response.razorpay_payment_id,
+            razorpay_order_id: response.razorpay_order_id || '',
+            razorpay_signature: response.razorpay_signature || '',
+            amount: amount * 100, // Amount in paise (for signature verification)
+            amount_rupees: amount, // Also send in rupees for reference
+            currency: currency || 'INR',
+            plan_id: plan.id,
+            plan_duration: plan.duration,
+            plan_price: plan.price,
+            months: months, // Duration in months
+            user_type: 'developer' // Developer plan
+          };
 
-          // Update user subscription in Firestore
-          await updateDoc(doc(db, 'users', currentUser.uid), subscriptionData);
-          console.log('✅ Subscription activated successfully');
+          console.log('🔍 Verifying payment with backend...', {
+            ...paymentData,
+            razorpay_signature: paymentData.razorpay_signature ? '***' : 'missing',
+            razorpay_payment_id: paymentData.razorpay_payment_id
+          });
+          
+          const verificationResult = await subscriptionsAPI.verifyPayment(paymentData);
+          console.log('✅ Payment verified:', verificationResult);
+
+          // Refresh user profile to get updated subscription status
+          try {
+            await refreshProfile();
+          } catch (refreshError) {
+            console.warn('Failed to refresh profile:', refreshError);
+          }
 
           // Show success and redirect
           setPaymentLoading(false);
-          // alert(`Successfully subscribed to Developer ${plan.duration} plan! Payment ID: ${response.razorpay_payment_id}`); // Removed blocking alert
+          alert(`Successfully subscribed to Developer ${plan.duration} plan! You can now post your properties.`);
 
           // Redirect to post property page
           setTimeout(() => {
             navigate('/post-property', { state: { userType: 'developer' } });
-          }, 500); // reduced delay for smoother transition
+          }, 1000);
 
         } catch (error) {
-          console.error('Error saving payment/subscription:', error);
-          alert('Payment successful but subscription activation failed. Please contact support with payment ID: ' + response.razorpay_payment_id);
+          console.error('Error verifying payment/subscription:', error);
+          const errorMessage = error.message || 'Subscription activation failed';
+          alert(`Payment successful but ${errorMessage}. Please contact support with payment ID: ${response.razorpay_payment_id}`);
           setPaymentLoading(false);
         }
       },
