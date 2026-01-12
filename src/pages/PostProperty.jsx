@@ -75,7 +75,7 @@ const NewPropertySelectionContent = ({ userType, setUserType, setSelectedPropert
 const PostProperty = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { currentUser, isAuthenticated, userProfile } = useAuth();
+  const { currentUser, isAuthenticated } = useAuth();
   const [loading, setLoading] = useState(false);
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState('');
@@ -378,40 +378,18 @@ const PostProperty = () => {
       }
 
       if (userType === 'developer') {
-        propertyData.scheme_type = formData.schemeType || '';
-        propertyData.residential_options = formData.residentialOptions || [];
-        propertyData.commercial_options = formData.commercialOptions || [];
-        propertyData.base_price = formData.basePrice || formData.minPrice || '';
-        propertyData.max_price = formData.maxPrice || '';
-        propertyData.project_location = formData.projectLocation || '';
-        propertyData.amenities = formData.amenities || [];
-        propertyData.owner_name = formData.ownerName || '';
-        propertyData.company_name = formData.ownerName || '';
-        propertyData.possession_status = formData.possessionStatus || '';
-        propertyData.rera_status = formData.reraStatus || 'No';
-        propertyData.rera_number = formData.reraNumber || '';
+        propertyData.company_name = formData.companyName || '';
         propertyData.project_name = formData.projectName || '';
-        propertyData.project_stats = formData.projectStats || { towers: '', floors: '', units: '', area: '' };
-        propertyData.contact_phone = formData.contactPhone || '';
+        propertyData.total_units = formData.totalUnits || '';
         propertyData.completion_date = formData.completionDate || '';
+        propertyData.rera_number = formData.reraNumber || '';
       } else {
         // Clear developer specific fields if user type changed from developer
-        propertyData.scheme_type = '';
-        propertyData.residential_options = [];
-        propertyData.commercial_options = [];
-        propertyData.base_price = '';
-        propertyData.max_price = '';
-        propertyData.project_location = '';
-        propertyData.amenities = [];
-        propertyData.owner_name = '';
         propertyData.company_name = '';
-        propertyData.possession_status = '';
-        propertyData.rera_status = 'No';
-        propertyData.rera_number = '';
         propertyData.project_name = '';
-        propertyData.project_stats = {};
-        propertyData.contact_phone = '';
+        propertyData.total_units = '';
         propertyData.completion_date = '';
+        propertyData.rera_number = '';
       }
 
       // Use backend API to update property
@@ -631,10 +609,14 @@ const PostProperty = () => {
         status: 'active'
       };
 
-      // Subscription logic - get from backend user profile
-      if (userProfile?.subscription_expiry) {
-        propertyData.subscription_expiry = userProfile.subscription_expiry;
-      }
+      // Subscription logic...
+      try {
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        if (userDoc.exists() && userDoc.data().subscription_expiry) {
+          propertyData.subscription_expiry = userDoc.data().subscription_expiry;
+        }
+      } catch (e) { console.error(e); }
 
       if (showBhkType && formData.bhk) propertyData.bhk = formData.bhk;
 
@@ -655,7 +637,7 @@ const PostProperty = () => {
         propertyData.project_name = activeData.projectName || '';
         propertyData.project_stats = activeData.projectStats || { towers: '', floors: '', units: '', area: '' };
         propertyData.contact_phone = activeData.contactPhone || '';
-        propertyData.completion_date = activeData.completionDate || activeData.completion_date || '';
+        propertyData.completionDate = activeData.completionDate || '';
 
         const expiryDate = new Date();
         expiryDate.setFullYear(expiryDate.getFullYear() + 1);

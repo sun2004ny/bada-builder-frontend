@@ -249,9 +249,6 @@ export const propertiesAPI = {
       if (propertyData[key] !== undefined && propertyData[key] !== null) {
         if (Array.isArray(propertyData[key])) {
           propertyData[key].forEach(item => formData.append(key, item));
-        } else if (typeof propertyData[key] === 'object' && propertyData[key] !== null) {
-          // Serialize nested objects (like project_stats) to JSON
-          formData.append(key, JSON.stringify(propertyData[key]));
         } else {
           formData.append(key, propertyData[key]);
         }
@@ -274,9 +271,6 @@ export const propertiesAPI = {
       if (propertyData[key] !== undefined && propertyData[key] !== null) {
         if (Array.isArray(propertyData[key])) {
           propertyData[key].forEach(item => formData.append(key, item));
-        } else if (typeof propertyData[key] === 'object' && propertyData[key] !== null) {
-          // Serialize nested objects (like project_stats) to JSON
-          formData.append(key, JSON.stringify(propertyData[key]));
         } else {
           formData.append(key, propertyData[key]);
         }
