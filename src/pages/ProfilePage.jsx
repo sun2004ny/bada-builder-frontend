@@ -184,19 +184,54 @@ const ProfilePage = () => {
 
   const handlePhotoChange = async (e) => {
     const file = e.target.files?.[0];
-    if (!file || !currentUser) return;
+    if (!file || !currentUser) {
+      if (!file) {
+        console.log('No file selected');
+      }
+      return;
+    }
+
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file');
+      return;
+    }
+
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      alert('Image size should be less than 5MB');
+      return;
+    }
+
     try {
       setUploading(true);
+      console.log('Uploading profile photo...', file.name);
+      
       // Use backend API to upload profile photo
       const response = await usersAPI.uploadProfilePhoto(file);
-      const photoURL = response.profilePhoto || response.profile_photo || response.url;
+      console.log('Upload response:', response);
+      
+      // Handle different response structures
+      const photoURL = response?.profilePhoto || 
+                       response?.profile_photo || 
+                       response?.url || 
+                       response?.data?.profilePhoto ||
+                       response?.data?.url ||
+                       response?.image_url;
+      
+      if (!photoURL) {
+        console.error('No photo URL in response:', response);
+        throw new Error('Server did not return a photo URL. Please try again.');
+      }
+
       setProfilePhoto(photoURL);
       await refreshProfile();
       setUploadSuccess(true);
       setTimeout(() => setUploadSuccess(false), 3000);
     } catch (error) {
       console.error('Error uploading photo:', error);
-      alert(error.message || 'Upload failed. Please try again.');
+      const errorMessage = error.message || 'Upload failed. Please try again.';
+      alert(errorMessage);
     } finally {
       setUploading(false);
     }

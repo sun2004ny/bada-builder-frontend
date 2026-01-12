@@ -1,158 +1,212 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://bada-builder-backend.onrender.com/api';
+const API_BASE_URL =
+    import.meta.env.VITE_API_URL || 'https://bada-builder-backend.onrender.com/api';
 
 // Helper function to get auth token
 const getToken = () => {
-  return localStorage.getItem('token');
+    return localStorage.getItem('token');
 };
 
 // Helper function to get headers
 const getHeaders = (includeAuth = true) => {
-  const headers = {
-    'Content-Type': 'application/json',
-  };
+    const headers = {
+        'Content-Type': 'application/json',
+    };
 
-  if (includeAuth) {
-    const token = getToken();
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+    if (includeAuth) {
+        const token = getToken();
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
     }
-  }
 
-  return headers;
+    return headers;
 };
 
 // Helper function for file upload headers
 const getFileHeaders = (includeAuth = true) => {
-  const headers = {};
+    const headers = {};
 
-  if (includeAuth) {
-    const token = getToken();
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+    if (includeAuth) {
+        const token = getToken();
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
     }
-  }
 
-  return headers;
+    return headers;
 };
 
 // API request wrapper
-const apiRequest = async (endpoint, options = {}) => {
-  const url = `${API_BASE_URL}${endpoint}`;
-  const config = {
-    ...options,
-    headers: {
-      ...getHeaders(options.includeAuth !== false),
-      ...options.headers,
-    },
-  };
+const apiRequest = async(endpoint, options = {}) => {
+    const url = `${API_BASE_URL}${endpoint}`;
+    const config = {
+        ...options,
+        headers: {
+            ...getHeaders(options.includeAuth !== false),
+            ...options.headers,
+        },
+    };
 
-  try {
-    const response = await fetch(url, config);
-    const data = await response.json();
+    try {
+        const response = await fetch(url, config);
+        const data = await response.json();
 
-    if (!response.ok) {
-      throw new Error(data.error || 'Request failed');
+        if (!response.ok) {
+            throw new Error(data.error || 'Request failed');
+        }
+
+        return data;
+    } catch (error) {
+        console.error('API Error:', error);
+        throw error;
     }
-
-    return data;
-  } catch (error) {
-    console.error('API Error:', error);
-    throw error;
-  }
 };
 
 // File upload helper
-const uploadFile = async (endpoint, formData, includeAuth = true, method = 'POST') => {
-  const url = `${API_BASE_URL}${endpoint}`;
-  const headers = getFileHeaders(includeAuth);
+const uploadFile = async(endpoint, formData, includeAuth = true, method = 'POST') => {
+    const url = `${API_BASE_URL}${endpoint}`;
+    const headers = getFileHeaders(includeAuth);
 
-  try {
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: formData,
-    });
+    try {
+        console.log('Uploading file to:', url);
+        const response = await fetch(url, {
+            method,
+            headers,
+            body: formData,
+        });
 
-    const data = await response.json();
+        console.log('Upload response status:', response.status, response.statusText);
+        console.log('Upload response headers:', Object.fromEntries(response.headers.entries()));
 
-    if (!response.ok) {
-      throw new Error(data.error || 'Upload failed');
+        // Get response text once (can only be called once)
+        const responseText = await response.text();
+        console.log('Upload response text:', responseText ? responseText.substring(0, 200) : '(empty)');
+
+        let data = {};
+
+        // Try to parse as JSON if there's content
+        if (responseText && responseText.trim()) {
+            try {
+                data = JSON.parse(responseText);
+            } catch (parseError) {
+                console.warn('Response is not JSON, treating as text:', responseText.substring(0, 100));
+                // If not JSON, create a data object with the text
+                data = {
+                    message: responseText,
+                    raw: responseText,
+                    success: response.ok
+                };
+            }
+        }
+
+        if (!response.ok) {
+            const errorMessage = data.error ||
+                data.message ||
+                data.raw ||
+                `Upload failed with status ${response.status}: ${response.statusText}`;
+            console.error('Upload failed:', errorMessage);
+            throw new Error(errorMessage);
+        }
+
+        console.log('Upload successful, data:', data);
+        return data;
+    } catch (error) {
+        console.error('Upload Error:', error);
+        // If it's already an Error object, throw it as is
+        if (error instanceof Error) {
+            throw error;
+        }
+        // Otherwise wrap it
+        throw new Error(error.message || 'Upload failed');
     }
-
-    return data;
-  } catch (error) {
-    console.error('Upload Error:', error);
-    throw error;
-  }
 };
 
 // ==================== AUTH API ====================
 export const authAPI = {
-  register: async (userData) => {
-    return apiRequest('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(userData),
-      includeAuth: false,
-    });
-  },
+    register: async(userData) => {
+        return apiRequest('/auth/register', {
+            method: 'POST',
+            body: JSON.stringify(userData),
+            includeAuth: false,
+        });
+    },
 
-  login: async (email, password) => {
-    const response = await apiRequest('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-      includeAuth: false,
-    });
-    
-    // Store token
-    if (response.token) {
-      localStorage.setItem('token', response.token);
-      localStorage.setItem('user', JSON.stringify(response.user));
-    }
-    
-    return response;
-  },
+    login: async(email, password) => {
+        const response = await apiRequest('/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ email, password }),
+            includeAuth: false,
+        });
 
-  logout: () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-  },
+        // Store token
+        if (response.token) {
+            localStorage.setItem('token', response.token);
+            localStorage.setItem('user', JSON.stringify(response.user));
+        }
 
-  getCurrentUser: async () => {
-    return apiRequest('/auth/me');
-  },
+        return response;
+    },
 
-  updateProfile: async (profileData) => {
-    return apiRequest('/auth/profile', {
-      method: 'PUT',
-      body: JSON.stringify(profileData),
-    });
-  },
+    logout: () => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+    },
+
+    getCurrentUser: async() => {
+        return apiRequest('/auth/me');
+    },
+
+    updateProfile: async(profileData) => {
+        return apiRequest('/auth/profile', {
+            method: 'PUT',
+            body: JSON.stringify(profileData),
+        });
+    },
 };
 
 // ==================== USERS API ====================
 export const usersAPI = {
-  uploadProfilePhoto: async (file) => {
-    const formData = new FormData();
-    formData.append('photo', file);
-    return uploadFile('/users/profile-photo', formData);
-  },
+    uploadProfilePhoto: async(file) => {
+        // Validate file
+        if (!file || !(file instanceof File)) {
+            throw new Error('Invalid file provided');
+        }
 
-  getStats: async () => {
-    return apiRequest('/users/stats');
-  },
+        const formData = new FormData();
+        formData.append('photo', file);
+
+        console.log('Uploading profile photo:', {
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type
+        });
+
+        try {
+            const response = await uploadFile('/users/profile-photo', formData);
+            console.log('Profile photo upload response:', response);
+            return response;
+        } catch (error) {
+            console.error('Profile photo upload error:', error);
+            throw error;
+        }
+    },
+
+    getStats: async() => {
+        return apiRequest('/users/stats');
+    },
 };
 
 // ==================== PROPERTIES API ====================
 export const propertiesAPI = {
-  getAll: async (filters = {}) => {
-    const queryParams = new URLSearchParams();
-    Object.keys(filters).forEach(key => {
-      if (filters[key] !== undefined && filters[key] !== null && filters[key] !== '') {
-        queryParams.append(key, filters[key]);
-      }
-    });
-    const queryString = queryParams.toString();
-    return apiRequest(`/properties${queryString ? `?${queryString}` : ''}`, {
+        getAll: async(filters = {}) => {
+                const queryParams = new URLSearchParams();
+                Object.keys(filters).forEach(key => {
+                    if (filters[key] !== undefined && filters[key] !== null && filters[key] !== '') {
+                        queryParams.append(key, filters[key]);
+                    }
+                });
+                const queryString = queryParams.toString();
+                return apiRequest(`/properties${queryString ? `?${queryString}` : ''}`, {
       includeAuth: false,
     });
   },
