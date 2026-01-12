@@ -132,26 +132,16 @@ const SubscriptionPlans = () => {
 
         try {
           // Verify payment with backend API
-          // Send amount in paise (as sent to Razorpay) for signature verification
           const paymentData = {
             razorpay_payment_id: response.razorpay_payment_id,
             razorpay_order_id: response.razorpay_order_id || '',
             razorpay_signature: response.razorpay_signature || '',
-            amount: amount * 100, // Amount in paise (for signature verification)
-            amount_rupees: amount, // Also send in rupees for reference
-            currency: currency || 'INR',
-            plan_id: plan.id,
-            plan_duration: plan.duration,
-            plan_price: plan.price,
-            months: months // Duration in months
+            amount: amount,
+            currency: currency,
+            plan_id: plan.id
           };
 
-          console.log('🔍 Verifying payment with backend...', {
-            ...paymentData,
-            razorpay_signature: paymentData.razorpay_signature ? '***' : 'missing',
-            razorpay_payment_id: paymentData.razorpay_payment_id
-          });
-          
+          console.log('Verifying payment with backend...', paymentData);
           const verificationResult = await subscriptionsAPI.verifyPayment(paymentData);
           console.log('✅ Payment verified:', verificationResult);
 
