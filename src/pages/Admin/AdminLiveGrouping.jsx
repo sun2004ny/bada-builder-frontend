@@ -2,44 +2,9 @@ import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
-import { db } from '../../firebase';
+import { liveGroupingAPI } from '../../services/api';
+import { compressImage } from '../../utils/imageCompressor';
 import './AdminLiveGrouping.css';
-
-// --- Cloudinary Configuration ---
-const CLOUDINARY_CLOUD_NAME = "dooamkdih";
-const CLOUDINARY_UPLOAD_PRESET = "property_images";
-
-/**
- * Uploads an image file to Cloudinary using an unsigned preset.
- * @param {File} file The image file to upload.
- * @returns {Promise<string>} A promise that resolves to the secure URL of the uploaded image.
- */
-const uploadToCloudinary = async (file) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-
-  const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
-
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(`Cloudinary upload failed: ${errorData.error.message}`);
-    }
-
-    const data = await response.json();
-    return data.secure_url;
-  } catch (error) {
-    console.error("Error uploading to Cloudinary:", error);
-    throw error;
-  }
-};
 
 
 const AdminLiveGrouping = () => {
@@ -91,14 +56,12 @@ const AdminLiveGrouping = () => {
 
   const fetchProperties = async () => {
     try {
-      const querySnapshot = await getDocs(collection(db, 'live_grouping_properties'));
-      const propertiesData = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
+      const response = await liveGroupingAPI.getAll();
+      const propertiesData = response.properties || response || [];
       setProperties(propertiesData);
     } catch (error) {
       console.error('Error fetching properties:', error);
+      alert('Failed to load properties. Please try again.');
     }
   };
 
@@ -121,24 +84,25 @@ const AdminLiveGrouping = () => {
     setImagePreviews(previews);
   };
 
-  const uploadImages = async () => {
-    const uploadPromises = imageFiles.map(file => uploadToCloudinary(file));
-    const imageUrls = await Promise.all(uploadPromises);
-    return imageUrls;
-  };
+  // Images will be sent directly to backend API
+  // Backend handles compression and upload
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
 
     try {
-      // Upload images to Cloudinary
-      let imageUrls = [];
-      if (imageFiles.length > 0) {
-        console.log(`📸 Uploading ${imageFiles.length} images to Cloudinary...`);
-        imageUrls = await uploadImages();
-        console.log('✅ Images uploaded successfully:', imageUrls);
-      }
+      // Compress images before sending to backend
+      const compressedImages = await Promise.all(
+        imageFiles.map(async (file) => {
+          try {
+            return await compressImage(file);
+          } catch (err) {
+            console.warn(`Compression failed, using original`, err);
+            return file;
+          }
+        })
+      );
 
       // Calculate savings
       const originalPriceNum = parseFloat(formData.originalPrice.replace(/[^0-9.]/g, ''));
@@ -175,33 +139,23 @@ const AdminLiveGrouping = () => {
           refundPolicy: formData.refundPolicy,
           closingDate: formData.closingDate,
           expectedCompletion: formData.expectedCompletion
-        },
-        // Use Cloudinary URLs. If editing and no new images, this field won't be updated.
-        ...(imageUrls.length > 0 && { 
-            images: imageUrls,
-            image: imageUrls[0] 
-        }),
-        created_at: new Date().toISOString(),
-        created_by: currentUser.uid
+        }
       };
 
+      console.log(`Submitting ${editingId ? 'update' : 'create'} with ${compressedImages.length} images...`);
+
       if (editingId) {
-        // If editing, don't overwrite images unless new ones are uploaded
-        const docRef = doc(db, 'live_grouping_properties', editingId);
-        if (imageUrls.length === 0) {
-            // Keep existing images if none are uploaded
-            delete propertyData.images;
-            delete propertyData.image;
-        }
-        await updateDoc(docRef, propertyData);
+        // Update existing property
+        await liveGroupingAPI.update(editingId, propertyData, compressedImages);
         alert('Property updated successfully!');
       } else {
-        // Add new property, ensuring placeholder if no images
-        if (imageUrls.length === 0) {
-            propertyData.images = ['/placeholder-property.jpg'];
-            propertyData.image = '/placeholder-property.jpg';
+        // Create new property
+        if (compressedImages.length === 0) {
+          alert('Please upload at least one image');
+          setLoading(false);
+          return;
         }
-        await addDoc(collection(db, 'live_grouping_properties'), propertyData);
+        await liveGroupingAPI.create(propertyData, compressedImages);
         alert('Property added successfully!');
       }
 
@@ -211,7 +165,7 @@ const AdminLiveGrouping = () => {
       setShowForm(false);
     } catch (error) {
       console.error('Error saving property:', error);
-      alert('Error saving property: ' + error.message);
+      alert('Error saving property: ' + (error.message || 'Unknown error'));
     } finally {
       setLoading(false);
     }
@@ -254,12 +208,12 @@ const AdminLiveGrouping = () => {
     if (!window.confirm('Are you sure you want to delete this property?')) return;
 
     try {
-      await deleteDoc(doc(db, 'live_grouping_properties', id));
+      await liveGroupingAPI.delete(id);
       alert('Property deleted successfully!');
       fetchProperties();
     } catch (error) {
       console.error('Error deleting property:', error);
-      alert('Error deleting property: ' + error.message);
+      alert('Error deleting property: ' + (error.message || 'Unknown error'));
     }
   };
 

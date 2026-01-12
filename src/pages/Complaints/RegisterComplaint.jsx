@@ -1,45 +1,10 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { addDoc, collection, serverTimestamp, query, where, getDocs, orderBy } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage, auth } from '../../firebase';
+import { useAuth } from '../../context/AuthContext';
+import { complaintsAPI } from '../../services/api';
 import { FaClipboardList, FaClock, FaCheckCircle, FaMapMarkerAlt, FaCalendarAlt } from 'react-icons/fa';
 import { compressImage } from '../../utils/imageCompressor';
 import './RegisterComplaint.css';
-
-// --- Cloudinary Configuration ---
-const CLOUDINARY_CLOUD_NAME = "dooamkdih";
-const CLOUDINARY_UPLOAD_PRESET = "property_images"; // Reusing existing preset or change if needed
-
-/**
- * Uploads an image/video file to Cloudinary using an unsigned preset.
- */
-const uploadToCloudinary = async (file) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-
-  const resourceType = file.type.startsWith('image/') ? 'image' : 'video';
-  const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/${resourceType}/upload`;
-
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(`Cloudinary upload failed: ${errorData.error?.message || 'Unknown error'}`);
-    }
-
-    const data = await response.json();
-    return data.secure_url;
-  } catch (error) {
-    console.error("Error uploading to Cloudinary:", error);
-    throw error;
-  }
-};
 
 const RegisterComplaint = () => {
   const [activeView, setActiveView] = useState('register'); // register, ongoing, fulfilled
@@ -84,35 +49,28 @@ const RegisterComplaint = () => {
   const fetchComplaints = async () => {
     setLoadingComplaints(true);
     try {
-      const user = auth.currentUser;
-      if (!user) {
+      if (!currentUser && !userProfile) {
         alert('Please login to view your complaints');
         return;
       }
 
-      // Fetch ongoing complaints (Submitted, Under Review, In Progress)
-      const ongoingQuery = query(
-        collection(db, 'complaints'),
-        where('phone', '==', formData.phone || user.phoneNumber),
-        where('status', 'in', ['Submitted', 'Under Review', 'In Progress']),
-        orderBy('createdAt', 'desc')
-      );
-      const ongoingSnapshot = await getDocs(ongoingQuery);
-      const ongoing = ongoingSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setOngoingComplaints(ongoing);
+      // Fetch complaints from backend API
+      const response = await complaintsAPI.getMyComplaints();
+      const allComplaints = response.complaints || response || [];
 
-      // Fetch fulfilled complaints (Resolved, Rejected)
-      const fulfilledQuery = query(
-        collection(db, 'complaints'),
-        where('phone', '==', formData.phone || user.phoneNumber),
-        where('status', 'in', ['Resolved', 'Rejected']),
-        orderBy('createdAt', 'desc')
+      // Separate ongoing and fulfilled complaints
+      const ongoing = allComplaints.filter(c => 
+        ['Submitted', 'Under Review', 'In Progress'].includes(c.status)
       );
-      const fulfilledSnapshot = await getDocs(fulfilledQuery);
-      const fulfilled = fulfilledSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const fulfilled = allComplaints.filter(c => 
+        ['Resolved', 'Rejected'].includes(c.status)
+      );
+
+      setOngoingComplaints(ongoing);
       setFulfilledComplaints(fulfilled);
     } catch (error) {
       console.error('Error fetching complaints:', error);
+      alert('Failed to load complaints. Please try again.');
     } finally {
       setLoadingComplaints(false);
     }
@@ -139,29 +97,8 @@ const RegisterComplaint = () => {
     setMediaFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const uploadMediaFiles = async () => {
-    console.log(`☁️ Uploading ${mediaFiles.length} files...`);
-
-    const uploadPromises = mediaFiles.map(async (file) => {
-      // 1. Compress image if it's an image
-      let fileToUpload = file;
-      if (file.type.startsWith('image/')) {
-        try {
-          console.log(`📉 Compressing ${file.name}...`);
-          fileToUpload = await compressImage(file, 1280, 0.7);
-        } catch (err) {
-          console.warn(`Compression failed for ${file.name}, using original`, err);
-        }
-      }
-
-      // 2. Upload to Cloudinary
-      return uploadToCloudinary(fileToUpload);
-    });
-
-    const mediaUrls = await Promise.all(uploadPromises);
-    console.log('✅ All media uploaded successfully.');
-    return mediaUrls;
-  };
+  // Media files will be sent directly to backend API
+  // Backend will handle compression and upload
 
   const validateForm = () => {
     if (!formData.category || !formData.title || !formData.description) {
@@ -199,16 +136,23 @@ const RegisterComplaint = () => {
     setLoading(true);
 
     try {
-      // Upload media files
-      const mediaUrls = await uploadMediaFiles();
+      // Compress images before sending to backend
+      const compressedMediaFiles = await Promise.all(
+        mediaFiles.map(async (file) => {
+          if (file.type.startsWith('image/')) {
+            try {
+              return await compressImage(file, 1280, 0.7);
+            } catch (err) {
+              console.warn(`Compression failed for ${file.name}, using original`, err);
+              return file;
+            }
+          }
+          return file;
+        })
+      );
 
-      // Generate complaint ID
-      const timestamp = Date.now();
-      const generatedId = `CMP${timestamp}`;
-
-      // Save to Firestore
-      await addDoc(collection(db, 'complaints'), {
-        complaintId: generatedId,
+      // Prepare complaint data
+      const complaintData = {
         category: formData.category,
         title: formData.title,
         description: formData.description,
@@ -218,19 +162,21 @@ const RegisterComplaint = () => {
         longitude: formData.longitude || null,
         fullName: formData.fullName,
         phone: formData.phone,
-        email: formData.email || null,
-        mediaUrls: mediaUrls,
-        status: 'Submitted',
-        userId: auth.currentUser?.uid || null,
-        createdAt: serverTimestamp(),
-        submittedDate: new Date().toISOString()
-      });
+        email: formData.email || null
+      };
 
+      console.log('Submitting complaint with', compressedMediaFiles.length, 'media files...');
+      
+      // Submit complaint using backend API (backend handles media upload)
+      const response = await complaintsAPI.create(complaintData, compressedMediaFiles);
+      
+      const generatedId = response.complaint_id || response.id || response.complaintId || `CMP${Date.now()}`;
+      
       setComplaintId(generatedId);
       setStep(5); // Success screen
     } catch (error) {
       console.error('Error submitting complaint:', error);
-      alert('Failed to submit complaint. Please try again.');
+      alert(error.message || 'Failed to submit complaint. Please try again.');
     } finally {
       setLoading(false);
     }

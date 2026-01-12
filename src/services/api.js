@@ -398,6 +398,12 @@ export const liveGroupingAPI = {
       method: 'PATCH',
     });
   },
+
+  delete: async (id) => {
+    return apiRequest(`/live-grouping/${id}`, {
+      method: 'DELETE',
+    });
+  },
 };
 
 // ==================== COMPLAINTS API ====================
