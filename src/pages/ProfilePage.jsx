@@ -7,30 +7,8 @@ import { db } from '../firebase';
 import { motion, AnimatePresence } from 'framer-motion';
 import ChatList from '../components/ChatList/ChatList';
 import ChatBox from '../components/ChatBox/ChatBox';
+import { usersAPI } from '../services/api';
 import './ProfilePage.css';
-
-// Cloudinary Configuration
-const CLOUDINARY_CLOUD_NAME = "dooamkdih";
-const CLOUDINARY_UPLOAD_PRESET = "property_images";
-
-const uploadToCloudinary = async (file) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-  const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
-  try {
-    const response = await fetch(url, { method: 'POST', body: formData });
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(`Cloudinary upload failed: ${errorData.error.message}`);
-    }
-    const data = await response.json();
-    return data.secure_url;
-  } catch (error) {
-    console.error("Error uploading to Cloudinary:", error);
-    throw error;
-  }
-};
 
 const ProfilePage = () => {
   const navigate = useNavigate();
@@ -209,15 +187,16 @@ const ProfilePage = () => {
     if (!file || !currentUser) return;
     try {
       setUploading(true);
-      const photoURL = await uploadToCloudinary(file);
-      await updateDoc(doc(db, 'users', currentUser.uid), { profilePhoto: photoURL });
+      // Use backend API to upload profile photo
+      const response = await usersAPI.uploadProfilePhoto(file);
+      const photoURL = response.profilePhoto || response.profile_photo || response.url;
       setProfilePhoto(photoURL);
       await refreshProfile();
       setUploadSuccess(true);
       setTimeout(() => setUploadSuccess(false), 3000);
     } catch (error) {
       console.error('Error uploading photo:', error);
-      alert('Upload failed. Please try again.');
+      alert(error.message || 'Upload failed. Please try again.');
     } finally {
       setUploading(false);
     }
@@ -227,11 +206,23 @@ const ProfilePage = () => {
     if (!currentUser) return;
     try {
       setUploading(true);
-      await updateDoc(doc(db, 'users', currentUser.uid), { profilePhoto: null });
+      // Use backend API to remove profile photo (upload empty/null)
+      // Note: Backend should handle null/empty file to remove photo
+      await usersAPI.uploadProfilePhoto(new File([], 'empty'));
       setProfilePhoto(null);
       await refreshProfile();
     } catch (error) {
       console.error('Error removing photo:', error);
+      // Try alternative: update profile with null photo
+      try {
+        const { authAPI } = await import('../services/api');
+        await authAPI.updateProfile({ profile_photo: null });
+        setProfilePhoto(null);
+        await refreshProfile();
+      } catch (updateError) {
+        console.error('Error updating profile:', updateError);
+        alert('Failed to remove photo. Please try again.');
+      }
     } finally {
       setUploading(false);
     }
